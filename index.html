@@ -234,6 +234,7 @@ let tops=store.get('tops',DEFAULT_TOPS);
 if(store.get('menuVer',0)<MENU_VER){menu=DEFAULT_MENU;tops=DEFAULT_TOPS;S.shop='Tiệm nhà RyNo';store.set('menu',menu);store.set('tops',tops);store.set('settings',S);store.set('menuVer',MENU_VER)}
 let orders=store.get('orders',[]);
 let cart=[];
+let editing=null; // id đơn đang sửa
 let curCat='Tất cả';
 const saveOrders=()=>store.set('orders',orders);
 const saveMenu=()=>{store.set('menu',menu);store.set('tops',tops)};
@@ -331,31 +332,34 @@ function openItem(id){
 function updateCartBar(){
  const onSell=$('#tab-sell').classList.contains('active');
  const n=cart.reduce((s,c)=>s+c.qty,0);
- $('#cartBar').classList.toggle('show',onSell&&n>0);
- $('#cartInfo').textContent=`🛒 ${n} món · Xem đơn`;
+ $('#cartBar').classList.toggle('show',onSell&&(n>0||!!editing));
+ const eo=editing&&orders.find(o=>o.id===editing);
+ $('#cartInfo').textContent=eo?`✏️ Sửa đơn #${pad(eo.no)} · ${n} món`:`🛒 ${n} món · Xem đơn`;
  $('#cartTotal').textContent=fmt(cart.reduce((s,c)=>s+c.line,0));
 }
 $('#cartBar').addEventListener('click',openCart);
 
 function openCart(){
- let pay='TM';
+ let pay=(editing&&orders.find(o=>o.id===editing)?.pay)||'TM';
  const draw=()=>{
-  if(!cart.length){closeSheet();updateCartBar();return}
+  const eo=editing&&orders.find(o=>o.id===editing);
+  if(!cart.length&&!eo){closeSheet();updateCartBar();return}
   const total=cart.reduce((s,c)=>s+c.line,0);
   openSheet(`
-   <div class="row between"><b style="font-size:18px">Đơn mới</b><button class="x" data-a="close">✕</button></div>
+   <div class="row between"><b style="font-size:18px">${eo?'✏️ Sửa đơn #'+pad(eo.no)+' · '+eo.time:'Đơn mới'}</b><button class="x" data-a="close">✕</button></div>
+   ${eo?'<div class="muted" style="margin-bottom:6px">Thêm món: đóng khung này rồi chạm vào món trong menu.</div>':''}
    ${cart.map((c,i)=>`<div class="cl"><div><b>${c.qty} × ${esc(c.name)}${c.size?' ('+c.size+')':''}</b>
      ${c.toppings.length?`<div class="muted">+ ${esc(c.toppings.join(', '))}</div>`:''}${c.note?`<div class="muted">${esc(c.note)}</div>`:''}</div>
      <div style="text-align:right;white-space:nowrap">${fmt(c.line)}<br><button class="x" style="font-size:14px" data-a="rm" data-i="${i}">Xóa</button></div></div>`).join('')}
    <div class="row between" style="margin:14px 0"><b>Tổng cộng</b><b style="font-size:22px;color:var(--brown)">${fmt(total)}</b></div>
    <div class="seg"><button data-a="pay" data-v="TM" class="${pay==='TM'?'on':''}">💵 Tiền mặt</button><button data-a="pay" data-v="CK" class="${pay==='CK'?'on':''}">🏦 Chuyển khoản</button></div>
-   <div class="row"><button class="btn danger" data-a="clear">Hủy đơn</button><button class="btn" style="flex:1" data-a="pay-ok">Thanh toán ${fmt(total)}</button></div>`,
+   <div class="row"><button class="btn danger" data-a="clear">${eo?'Bỏ sửa':'Hủy đơn'}</button><button class="btn" style="flex:1" data-a="pay-ok">${eo?'Lưu thay đổi':'Thanh toán'} ${fmt(total)}</button></div>`,
   p=>p.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{
    const a=b.dataset.a;
    if(a==='close')return closeSheet();
    if(a==='rm')cart.splice(+b.dataset.i,1);
    if(a==='pay')pay=b.dataset.v;
-   if(a==='clear'){cart=[];closeSheet();updateCartBar();return}
+   if(a==='clear'){cart=[];editing=null;closeSheet();updateCartBar();return}
    if(a==='pay-ok')return checkout(pay);
    draw();
   }));
@@ -364,6 +368,14 @@ function openCart(){
 }
 
 function checkout(pay){
+ if(editing){
+  const o=orders.find(x=>x.id===editing);editing=null;
+  if(o){
+   if(!cart.length){cart=[];closeSheet();updateCartBar();return toast('Đơn trống. Muốn bỏ đơn hãy dùng Xóa trong tab Đơn')}
+   o.items=cart.map(c=>({...c}));o.total=cart.reduce((s,c)=>s+c.line,0);o.pay=pay;o.synced=false;o.updatedAt=Date.now();
+   saveOrders();cart=[];closeSheet();updateCartBar();toast(`✅ Đã sửa đơn #${pad(o.no)} · ${fmt(o.total)}`);sync();return;
+  }
+ }
  const now=new Date(),d=dstr(now);
  const no=orders.filter(o=>o.date===d).reduce((mx,o)=>Math.max(mx,o.no),0)+1;
  const o={id:uid(),no,date:d,time:pad(now.getHours())+':'+pad(now.getMinutes()),ts:now.getTime(),
@@ -378,7 +390,7 @@ $('#ordDate').addEventListener('change',renderOrders);
 function renderOrders(){
  if(!$('#ordDate').value)$('#ordDate').value=today();
  const d=$('#ordDate').value;
- const list=orders.filter(o=>o.date===d).sort((a,b)=>b.ts-a.ts);
+ const list=orders.filter(o=>o.date===d&&o.status!=='xoa').sort((a,b)=>b.ts-a.ts);
  const ok=list.filter(o=>o.status==='ok');
  $('#ordSum').innerHTML=`<div class="kpis"><div class="kpi"><div class="v">${ok.length}</div><div class="l">Số đơn</div></div><div class="kpi"><div class="v">${fmt(ok.reduce((s,o)=>s+o.total,0))}</div><div class="l">Doanh thu</div></div></div>`;
  $('#ordList').innerHTML=list.length?list.map(o=>`<div class="card ord ${o.status==='huy'?'huy':''}">
@@ -386,14 +398,42 @@ function renderOrders(){
    <span>${o.status==='huy'?'<span class="badge h">Đã hủy</span> ':''}<span class="badge ${o.synced?'':'p'}">${o.synced?'Đã lên Sheets':'Chờ gửi'}</span></span></div>
    ${o.items.map(i=>`<div class="muted">${i.qty} × ${esc(i.name)}${i.size?' ('+i.size+')':''}${i.toppings.length?' + '+esc(i.toppings.join(', ')):''}${i.note?' · '+esc(i.note):''}</div>`).join('')}
    <div class="row between" style="margin-top:4px"><span class="muted">${o.pay==='CK'?'Chuyển khoản':'Tiền mặt'}</span>
-   <span class="row"><b class="tot">${fmt(o.total)}</b><button class="btn sec" style="padding:5px 10px;font-size:13px" data-tog="${o.id}">${o.status==='huy'?'Khôi phục':'Hủy'}</button></span></div></div>`).join(''):'<div class="empty">Chưa có đơn nào trong ngày này.</div>';
+   <b class="tot">${fmt(o.total)}</b></div>
+   <div class="row" style="justify-content:flex-end;margin-top:6px;gap:6px">
+    <button class="btn sec" style="padding:5px 10px;font-size:13px" data-act="tog" data-id="${o.id}">${o.status==='huy'?'Khôi phục':'Hủy'}</button>
+    <button class="btn sec" style="padding:5px 10px;font-size:13px" data-act="edit" data-id="${o.id}">✏️ Sửa</button>
+    <button class="btn danger" style="padding:5px 10px;font-size:13px" data-act="del" data-id="${o.id}">🗑 Xóa</button></div></div>`).join(''):'<div class="empty">Chưa có đơn nào trong ngày này.</div>';
+}
+// Hỏi mật khẩu trước khi sửa/xóa
+function askPass(title,cb){
+ openSheet(`<div class="row between"><b style="font-size:18px">${title}</b><button class="x" data-a="close">✕</button></div>
+  <p class="muted">Nhập mật khẩu để xác nhận</p><input type="password" id="apw" autocomplete="current-password">
+  <div id="apErr" style="color:var(--bad);font-size:14px;min-height:20px;margin:6px 0"></div>
+  <button class="btn block" data-a="ok">Xác nhận</button>`,
+ p=>{
+  const go=async()=>{if(await sha(p.querySelector('#apw').value)===curHash()){closeSheet();cb()}else p.querySelector('#apErr').textContent='Sai mật khẩu'};
+  p.querySelector('[data-a=close]').onclick=closeSheet;p.querySelector('[data-a=ok]').onclick=go;
+  p.querySelector('#apw').onkeydown=e=>{if(e.key==='Enter')go()};setTimeout(()=>p.querySelector('#apw').focus(),250);
+ });
 }
 $('#ordList').addEventListener('click',e=>{
- const b=e.target.closest('[data-tog]');if(!b)return;
- const o=orders.find(x=>x.id===b.dataset.tog);if(!o)return;
- if(o.status==='ok'&&!confirm(`Hủy đơn #${pad(o.no)}?`))return;
- o.status=o.status==='ok'?'huy':'ok';o.synced=false;o.updatedAt=Date.now();
- saveOrders();renderOrders();sync();
+ const b=e.target.closest('[data-act]');if(!b)return;
+ const o=orders.find(x=>x.id===b.dataset.id);if(!o)return;
+ const act=b.dataset.act;
+ if(act==='tog'){
+  if(o.status==='ok'&&!confirm(`Hủy đơn #${pad(o.no)}? (Đơn vẫn được giữ lại nhưng không tính tiền)`))return;
+  o.status=o.status==='ok'?'huy':'ok';o.synced=false;o.updatedAt=Date.now();saveOrders();renderOrders();sync();
+ }
+ if(act==='edit')askPass(`Sửa đơn #${pad(o.no)}`,()=>{
+  editing=o.id;cart=o.items.map(i=>({...i,toppings:[...(i.toppings||[])]}));
+  $('#nav button[data-t="sell"]').click();openCart();
+ });
+ if(act==='del')askPass(`Xóa hẳn đơn #${pad(o.no)}`,()=>{
+  if(!confirm(`Xóa hẳn đơn #${pad(o.no)} (${fmt(o.total)})? Đơn sẽ bị xóa cả trên Google Sheets và không khôi phục được.`))return;
+  if(!S.url)orders=orders.filter(x=>x.id!==o.id);
+  else{o.status='xoa';o.synced=false;o.updatedAt=Date.now()}
+  saveOrders();renderOrders();toast('Đã xóa đơn #'+pad(o.no));sync();
+ });
 });
 
 // ===== Thống kê =====
@@ -502,14 +542,19 @@ async function post(body){
  const j=await r.json();if(!j.ok)throw new Error(j.error||'Lỗi không rõ');return j;
 }
 let lastPull=0;
-function mergeRemote(list){
- const byId=new Map(orders.map(o=>[o.id,o]));let ch=0;
+function mergeRemote(list,since){
+ const byId=new Map(orders.map(o=>[o.id,o])),remote=new Set(list.map(r=>r.id));let ch=0;
  list.forEach(r=>{
   const l=byId.get(r.id);
   if(l&&!l.synced)return; // đơn trên máy chưa gửi thì giữ bản trên máy
-  if(!l){orders.push({...r,ts:new Date(r.date+'T'+(r.time||'00:00')).getTime()||Date.now(),synced:true,updatedAt:0});ch++}
-  else if(l.status!==r.status){l.status=r.status;ch++}
+  if(!l){orders.push({...r,ts:new Date(r.date+'T'+(r.time||'00:00')).getTime()||Date.now(),synced:true,updatedAt:0});ch++;return}
+  const key=x=>JSON.stringify([x.status,x.total,x.pay,x.items]);
+  if(key(l)!==key(r)){Object.assign(l,{status:r.status,total:r.total,pay:r.pay,items:r.items});ch++}
  });
+ // Đơn đã đồng bộ nhưng không còn trên Sheets (bị xóa tay trên Sheet) thì xóa khỏi máy
+ const before=orders.length;
+ orders=orders.filter(o=>!(o.synced&&o.date>=since&&!remote.has(o.id)));
+ ch+=before-orders.length;
  if(ch){orders.sort((a,b)=>a.ts-b.ts);saveOrders()}
  return ch;
 }
@@ -526,6 +571,7 @@ async function sync(manual){
    const j=await post({action:'upsert',orders:batch.map(({synced,...o})=>o)});
    const done=new Set(j.ids||[]);
    orders.forEach(o=>{if(done.has(o.id)&&o.updatedAt===sent[o.id])o.synced=true});
+   orders=orders.filter(o=>!(o.status==='xoa'&&o.synced));
    saveOrders();
    if(!done.size)break;
    pend=orders.filter(o=>!o.synced&&!(o.id in sent));
@@ -535,9 +581,10 @@ async function sync(manual){
   if(manual||Date.now()-lastPull>30000){
    const d=new Date();d.setDate(d.getDate()-90);
    const j=await post({action:'pull',since:dstr(d)});
-   added=mergeRemote(j.orders||[]);lastPull=Date.now();
+   if(!Array.isArray(j.orders))throw new Error('Apps Script chưa cập nhật bản mới');
+   added=mergeRemote(j.orders,dstr(d));lastPull=Date.now();
   }
-  syncing=false;setSync();if(manual)toast(added?`Đã đồng bộ ✓ (tải về ${added} đơn)`:'Đã đồng bộ ✓');
+  syncing=false;setSync();if(manual)toast(added?`Đã đồng bộ ✓ (cập nhật ${added} đơn)`:'Đã đồng bộ ✓');
  }catch(e){syncing=false;setSync('err');if(manual)toast('Lỗi đồng bộ: '+e.message)}
  if($('#tab-orders').classList.contains('active'))renderOrders();
  if($('#tab-stats').classList.contains('active'))renderStats();
