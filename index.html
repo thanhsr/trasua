@@ -483,7 +483,7 @@ $('#fileRestore').onchange=async e=>{
 };
 $('#btnClear').onclick=()=>{
  const p=orders.filter(o=>!o.synced).length;
- if(!confirm((p?`⚠️ Còn ${p} đơn CHƯA lên Google Sheets!\n`:'')+'Xóa toàn bộ đơn trên máy này? (Dữ liệu trên Google Sheets vẫn giữ nguyên)'))return;
+ if(!confirm((p?`⚠️ Còn ${p} đơn CHƯA lên Google Sheets!\n`:'')+'Xóa toàn bộ đơn trên máy này? (Dữ liệu trên Google Sheets vẫn giữ nguyên và sẽ được tải lại khi đồng bộ)'))return;
  orders=[];saveOrders();renderSettings();toast('Đã xóa');
 };
 
@@ -501,14 +501,26 @@ async function post(body){
  const r=await fetch(S.url,{method:'POST',body:JSON.stringify(body),redirect:'follow'});
  const j=await r.json();if(!j.ok)throw new Error(j.error||'Lỗi không rõ');return j;
 }
+let lastPull=0;
+function mergeRemote(list){
+ const byId=new Map(orders.map(o=>[o.id,o]));let ch=0;
+ list.forEach(r=>{
+  const l=byId.get(r.id);
+  if(l&&!l.synced)return; // đơn trên máy chưa gửi thì giữ bản trên máy
+  if(!l){orders.push({...r,ts:new Date(r.date+'T'+(r.time||'00:00')).getTime()||Date.now(),synced:true,updatedAt:0});ch++}
+  else if(l.status!==r.status){l.status=r.status;ch++}
+ });
+ if(ch){orders.sort((a,b)=>a.ts-b.ts);saveOrders()}
+ return ch;
+}
 async function sync(manual){
  if(!S.url){setSync('off');if(manual)toast('Chưa nhập link Google Sheets');return}
  if(syncing)return;
- let pend=orders.filter(o=>!o.synced);
- if(!pend.length){setSync();if(manual)toast('Đã đồng bộ hết ✓');return}
  if(!navigator.onLine){setSync('err');if(manual)toast('Không có mạng');return}
  syncing=true;setSync('busy');
  try{
+  // 1) Gửi đơn mới / đơn thay đổi
+  let pend=orders.filter(o=>!o.synced);
   while(pend.length){
    const batch=pend.slice(0,40),sent={};batch.forEach(o=>sent[o.id]=o.updatedAt);
    const j=await post({action:'upsert',orders:batch.map(({synced,...o})=>o)});
@@ -518,9 +530,17 @@ async function sync(manual){
    if(!done.size)break;
    pend=orders.filter(o=>!o.synced&&!(o.id in sent));
   }
-  syncing=false;setSync();if(manual)toast('Đã đồng bộ ✓');
- }catch(e){syncing=false;setSync('err');if(manual)toast('Lỗi gửi: '+e.message)}
+  // 2) Tải đơn từ Sheets về (90 ngày gần nhất)
+  let added=0;
+  if(manual||Date.now()-lastPull>30000){
+   const d=new Date();d.setDate(d.getDate()-90);
+   const j=await post({action:'pull',since:dstr(d)});
+   added=mergeRemote(j.orders||[]);lastPull=Date.now();
+  }
+  syncing=false;setSync();if(manual)toast(added?`Đã đồng bộ ✓ (tải về ${added} đơn)`:'Đã đồng bộ ✓');
+ }catch(e){syncing=false;setSync('err');if(manual)toast('Lỗi đồng bộ: '+e.message)}
  if($('#tab-orders').classList.contains('active'))renderOrders();
+ if($('#tab-stats').classList.contains('active'))renderStats();
 }
 $('#btnSync').onclick=()=>{S.url=$('#setUrl').value.trim();saveSet();sync(true)};
 $('#syncBtn').onclick=()=>sync(true);
